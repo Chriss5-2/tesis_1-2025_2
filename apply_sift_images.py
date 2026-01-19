@@ -1,6 +1,16 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import sys
+import os
+
+# Leyendo argumentos de entrada desde ejecución, ejemplo: python apply_sift_images.py <input_path> <output_path>
+if len(sys.argv) != 3:
+    print("Uso: python apply_sift_images.py <input_path> <output_path>")
+    sys.exit(1)
+
+input_path = sys.argv[1]
+output_path = sys.argv[2]
 
 # Preparado de archivos
 # Se trabajará por pares de imágenes
@@ -17,7 +27,7 @@ def apply_sift_matching(img1_path, img2_path, output_name, folder_name):
     # Le bajamos el tamaño para que se pueda aplicar mejor SIFT y se vea bien en la representación
     # Lo recomensable es disminuir el tamaño pero esto en algunas imágenes genera una pérdida de detalles en caso de que la imagen 
     # original sea pequeña. Por ello en este caso se opta por no reducir el tamaño
-    scale_percent = 100 # 100% del tamaño original
+    scale_percent = 40 # 100% del tamaño original
     width = int(img1.shape[1] * scale_percent / 100)
     height = int(img1.shape[0] * scale_percent / 100)
     dim = (width, height)
@@ -58,15 +68,20 @@ def apply_sift_matching(img1_path, img2_path, output_name, folder_name):
 
     # Como anteriormente se hizo el tratado en escala de grises
     # Ahora convertimos de BGR a RGB para que Matplotlib muestre los colores reales como la imagen original
-    img_matches = cv2.cvtColor(img_matches, cv2.COLOR_BGR2RGB)
-
+    cv2.imwrite(
+        output_path + folder_name + '/' + output_name,
+        cv2.cvtColor(img_matches, cv2.COLOR_BGR2RGB)
+    )
+    
     # Mostrando la imagen resultante con Matplotlib
-    plt.figure(figsize=(16, 8))
-    plt.imshow(img_matches)
-    plt.title(f"CORRESPONDENCIA SIFT: {len(good_matches)} puntos anclados\n(Nótese la detección en superficie texturizada)", fontsize=14)
-    plt.axis('off')
-    plt.tight_layout()
-    plt.show()
+    #plt.figure(figsize=(16, 8))
+    #plt.imshow(img_matches)
+    #plt.title(f"CORRESPONDENCIA SIFT: {len(good_matches)} puntos anclados\n(Nótese la detección en superficie texturizada)", fontsize=14)
+    #plt.axis('off')
+    #plt.tight_layout()
+    #plt.show()
+    #plt.close()
+    # Agregado para liberar memoria
 
     # Guardando la imagen resultante en la carpeta evidencias
     cv2.imwrite('evidencias/' + folder_name + '/' + output_name, cv2.cvtColor(img_matches, cv2.COLOR_RGB2BGR))
@@ -74,18 +89,31 @@ def apply_sift_matching(img1_path, img2_path, output_name, folder_name):
 
 
 def main():
-    Img_pruebas=["C_America", "Kirby", "Llama"]
-    for carpeta_Img in Img_pruebas:
-        print("Procesando imagenes de la carpeta: "+carpeta_Img)
-        # Par 1: Izquierda (minus_15) y Centro (front)
-        apply_sift_matching('Img_prueba/' + carpeta_Img + '/minus_15.jpeg','Img_prueba/' + carpeta_Img + '/front.jpeg', 'left_plus_front.png', carpeta_Img)
-        # Par 2: Centro (front) y Derecha (plus_15)
-        apply_sift_matching('Img_prueba/' + carpeta_Img + '/front.jpeg', 'Img_prueba/' + carpeta_Img + '/plus_15.jpeg', 'front_plus_right.png', carpeta_Img)
-    # Par 1: Izquierda (minus_15) y Centro (front)
-    # apply_sift_matching('minus_15.jpeg', 'front.jpeg', 'left_plus_front.png')
+    # Lectura de subcarpetas en el input_path
+    # Ejemplo, la carpeta imagenes, contiene la subcarpetas tripod_seq_20, tripod_seq_21, etc.
+    # Leer los archivos dentro de la carpeta tripod_seq_20, y como están nombrados desde 001.jpg hasta que acaben
+    # Tomar en pares consecutivos las imagenes, es decir, 001.jpg con 002.jpg, luego 002.jpg con 003.jpg, suponiendo q la ultima imagen es 100.jpg, será hasta 100.jpg con 001.jpg
+    # Y guardar en la carpeta de evidencias, dentro de una subcarpeta con el mismo nombre de la subcarpeta leída
+    for folder_name in os.listdir(input_path):
+        folder_path = os.path.join(input_path, folder_name)
+        if os.path.isdir(folder_path):
+            print(f"Procesando carpeta: {folder_name}")
+            output_folder = os.path.join('evidencias', folder_name)
+            if not os.path.exists(output_folder):
+                os.makedirs(output_folder)
 
-    # Par 2: Centro (front) y Derecha (plus_15)
-    # apply_sift_matching('front.jpeg', 'plus_15.jpeg', 'front_plus_right.png')
+            image_files = sorted([f for f in os.listdir(folder_path) if f.endswith('.jpg')])
+            num_images = len(image_files)
 
+            for i in range(num_images):
+                img1_name = image_files[i]
+                img2_name = image_files[(i + 1) % num_images]  # Siguiente imagen, con wrap-around
+
+                img1_path = os.path.join(folder_path, img1_name)
+                img2_path = os.path.join(folder_path, img2_name)
+
+                output_name = f"sift_{img1_name[:-4]}_{img2_name[:-4]}.jpg"
+                apply_sift_matching(img1_path, img2_path, output_name, folder_name)
+        
 if __name__ == "__main__":
     main()
