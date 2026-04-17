@@ -68,8 +68,13 @@ def apply_sift_matching(img1_path, img2_path, output_name, folder_name):
 
     # Como anteriormente se hizo el tratado en escala de grises
     # Ahora convertimos de BGR a RGB para que Matplotlib muestre los colores reales como la imagen original
-    cv2.imwrite(
-        output_path + folder_name + '/' + output_name,
+    output_folder_cli = os.path.join(output_path, folder_name)
+    output_folder_evidencias = os.path.join('evidencias-sift', folder_name)
+    os.makedirs(output_folder_cli, exist_ok=True)
+    os.makedirs(output_folder_evidencias, exist_ok=True)
+
+    saved_cli = cv2.imwrite(
+        os.path.join(output_folder_cli, output_name),
         cv2.cvtColor(img_matches, cv2.COLOR_BGR2RGB)
     )
     
@@ -84,8 +89,20 @@ def apply_sift_matching(img1_path, img2_path, output_name, folder_name):
     # Agregado para liberar memoria
 
     # Guardando la imagen resultante en la carpeta evidencias
-    cv2.imwrite('evidencias/' + folder_name + '/' + output_name, cv2.cvtColor(img_matches, cv2.COLOR_RGB2BGR))
-    print(f"Imagen guardada como '{output_name}' en la carpeta evidencias/{folder_name}!")
+    saved_evidencias = cv2.imwrite(
+        os.path.join(output_folder_evidencias, output_name),
+        cv2.cvtColor(img_matches, cv2.COLOR_RGB2BGR)
+    )
+
+    if saved_cli:
+        print(f"Imagen guardada en {os.path.join(output_folder_cli, output_name)}")
+    else:
+        print(f"No se pudo guardar imagen en {os.path.join(output_folder_cli, output_name)}")
+
+    if saved_evidencias:
+        print(f"Imagen guardada en {os.path.join(output_folder_evidencias, output_name)}")
+    else:
+        print(f"No se pudo guardar imagen en {os.path.join(output_folder_evidencias, output_name)}")
 
 
 def main():
@@ -98,7 +115,7 @@ def main():
         folder_path = os.path.join(input_path, folder_name)
         if os.path.isdir(folder_path):
             print(f"Procesando carpeta: {folder_name}")
-            output_folder = os.path.join('evidencias', folder_name)
+            output_folder = os.path.join('evidencias-sift', folder_name)
             if not os.path.exists(output_folder):
                 os.makedirs(output_folder)
 
