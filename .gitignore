@@ -9,3 +9,4 @@ temp/
 *.tmp
 tesis.py
 epfl_gims08.tar.gz
+datasets/*.tar.gz
