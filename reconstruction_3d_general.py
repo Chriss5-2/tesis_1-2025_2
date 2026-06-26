@@ -30,7 +30,13 @@ def obtener_datos_3d(img1, img2, K, folder_name):
 
     # Matriz Esencial y recuperación de Pose
     E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+    if E is None or E.shape != (3, 3):
+        return None, None, None
+
     _, R, t, mask = cv2.recoverPose(E, pts1, pts2, K)
+
+    if mask is None or np.sum(mask == 255) == 0:
+        return None, None, None
 
     # Solo puntos inliers según RANSAC
     pts1_in = pts1[mask.ravel() == 255]
