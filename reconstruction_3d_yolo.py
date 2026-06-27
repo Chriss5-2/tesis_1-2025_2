@@ -47,57 +47,7 @@ def obtener_mascara_estatica(img_color, model, save_path):
 
     return mask
 
-def obtener_datos_3d(img1, img2, mask1, mask2, K):
-    """Calcula la pose y triangula puntos entre dos imágenes usando máscaras."""
-    sift = cv2.SIFT_create()
-    
-    # Extraer características SOLO en el área permitida (fondo estático)
-    kp1, des1 = sift.detectAndCompute(img1, mask1)
-    kp2, des2 = sift.detectAndCompute(img2, mask2)
 
-    # Si no hay suficientes puntos, abortar
-    if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
-        return None, None, None
-
-    bf = cv2.BFMatcher()
-    matches = bf.knnMatch(des1, des2, k=2)
-
-    pts1, pts2 = [], []
-    for m_n in matches:
-        if len(m_n) == 2:
-            m, n = m_n
-            if m.distance < 0.70 * n.distance:
-                pts1.append(kp1[m.queryIdx].pt)
-                pts2.append(kp2[m.trainIdx].pt)
-
-    pts1 = np.float32(pts1)
-    pts2 = np.float32(pts2)
-
-    if len(pts1) < 10:
-        return None, None, None
-
-    # Matriz Esencial y recuperación de Pose
-    E, mask = cv2.findEssentialMat(pts1, pts2, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
-    if E is None or E.shape != (3, 3):
-        return None, None, None
-
-    _, R, t, mask = cv2.recoverPose(E, pts1, pts2, K)
-
-    if mask is None or np.sum(mask == 255) == 0:
-        return None, None, None
-
-    # Solo puntos inliers según RANSAC
-    pts1_in = pts1[mask.ravel() == 255]
-    pts2_in = pts2[mask.ravel() == 255]
-
-    # Triangulación local (Cámara 1 en el origen)
-    P1 = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
-    P2 = K @ np.hstack((R, t))
-    
-    pts_4d = cv2.triangulatePoints(P1, P2, pts1_in.T, pts2_in.T)
-    pts_3d = pts_4d[:3] / pts_4d[3]
-
-    return pts_3d, R, t
 
 def procesar_carpeta(folder_path, folder_name, yolo_model):
     # Cargar imágenes de la subcarpeta
@@ -180,33 +130,160 @@ def procesar_carpeta(folder_path, folder_name, yolo_model):
             
         masks.append(mask)
 
-    print("  > Iniciando triangulación...")
-    for i in range(len(image_files) - 1):
-        img1 = gray_images[i]
-        img2 = gray_images[i+1]
-        mask1 = masks[i]
-        mask2 = masks[i+1]
+    print("  > Iniciando triangulación secuencial con PnP...")
+    
+    sift = cv2.SIFT_create()
+    bf = cv2.BFMatcher()
+    
+    print("  > Extrayendo descriptores SIFT...")
+    keypoints = []
+    descriptors = []
+    for i in range(len(image_files)):
+        kp, des = sift.detectAndCompute(gray_images[i], masks[i])
+        keypoints.append(kp)
+        descriptors.append(des)
 
-        points_3d, R, t = obtener_datos_3d(img1, img2, mask1, mask2, K)
+    all_points_global = []
+    P_mats = {}
+    P_mats[0] = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+    
+    # Diccionario de tracking: keypoint_index_en_img_anterior -> 3D_point_global
+    track_3d = {}
 
-        if points_3d is not None:
-            # Transformar puntos locales al sistema global
-            points_global = R_acc @ points_3d + t_acc
-            all_points.append(points_global)
+    for i in range(1, len(image_files)):
+        kp1, des1 = keypoints[i-1], descriptors[i-1]
+        kp2, des2 = keypoints[i], descriptors[i]
+        
+        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
+            print(f"  > Par {i-1}-{i} ignorado (faltan keypoints).")
+            track_3d = {}
+            continue
+            
+        matches = bf.knnMatch(des1, des2, k=2)
+        good = []
+        for m_n in matches:
+            if len(m_n) == 2:
+                m, n = m_n
+                if m.distance < 0.70 * n.distance:
+                    good.append(m)
+                    
+        if len(good) < 10:
+            print(f"  > Par {i-1}-{i} ignorado (faltan matches).")
+            track_3d = {}
+            continue
 
-            # Actualizar la pose acumulada
-            t_acc = t_acc + R_acc @ t
-            R_acc = R_acc @ R
-            print(f"  > Par {i}-{i+1} procesado. Puntos: {points_3d.shape[1]}")
+        pts1 = np.float32([kp1[m.queryIdx].pt for m in good])
+        pts2 = np.float32([kp2[m.trainIdx].pt for m in good])
+        
+        if i == 1 or len(track_3d) < 10:
+            print(f"  > Intentando inicializar/recuperar en par {i-1}-{i} con {len(pts1)} matches...")
+            # Inicialización con Matriz Esencial
+            E, mask_E = cv2.findEssentialMat(pts1, pts2, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+            if E is None or E.shape != (3, 3):
+                print(f"  > Fallo en EssentialMat en par {i-1}-{i}. E es None o shape incorrecto.")
+                track_3d = {}
+                continue
+                
+            _, R_rel, t_rel, mask_E = cv2.recoverPose(E, pts1, pts2, K)
+            
+            if mask_E is None:
+                print(f"  > recoverPose devolvió mask_E None.")
+                track_3d = {}
+                continue
+            
+            inliers_count = np.sum(mask_E == 255)
+            print(f"  > recoverPose inliers: {inliers_count} de {len(mask_E)}")
+            if inliers_count == 0:
+                print(f"  > recoverPose falló: 0 inliers.")
+                track_3d = {}
+                continue
+                
+            if i == 1:
+                P_mats[i] = K @ np.hstack((R_rel, t_rel))
+            else:
+                # Si se perdió el rastro, reiniciamos el sistema de coordenadas local
+                P_mats[i-1] = K @ np.hstack((np.eye(3), np.zeros((3, 1))))
+                P_mats[i] = K @ np.hstack((R_rel, t_rel))
+                
+            inliers_idx = np.where(mask_E.ravel() == 255)[0]
+            pts1_in = pts1[inliers_idx]
+            pts2_in = pts2[inliers_idx]
+            
+            pts_4d = cv2.triangulatePoints(P_mats[i-1], P_mats[i], pts1_in.T, pts2_in.T)
+            pts_3d = (pts_4d[:3] / pts_4d[3]).T
+            
+            all_points_global.append(pts_3d)
+            print(f"  > Inicialización (Par {i-1}-{i}) completada. Puntos: {len(pts_3d)}")
+            
+            track_3d = {}
+            for idx_in_inlier, orig_idx in enumerate(inliers_idx):
+                m = good[orig_idx]
+                track_3d[m.trainIdx] = pts_3d[idx_in_inlier]
+                
         else:
-            print(f"  > Par {i}-{i+1} ignorado (sin suficientes inliers estáticos).")
+            # PnP para propagar la escala y la pose global
+            obj_pts = []
+            img_pts = []
+            train_idx_list = []
+            
+            for m in good:
+                if m.queryIdx in track_3d:
+                    obj_pts.append(track_3d[m.queryIdx])
+                    img_pts.append(kp2[m.trainIdx].pt)
+                    train_idx_list.append(m.trainIdx)
+                    
+            if len(obj_pts) < 10:
+                print(f"  > PnP falló en {i-1}-{i}: pocos puntos 3D-2D ({len(obj_pts)}).")
+                track_3d = {}
+                continue
+                
+            obj_pts = np.float32(obj_pts)
+            img_pts = np.float32(img_pts)
+            
+            success, rvec, tvec, inliers = cv2.solvePnPRansac(obj_pts, img_pts, K, None, flags=cv2.SOLVEPNP_ITERATIVE)
+            
+            if not success or inliers is None or len(inliers) < 5:
+                print(f"  > PnP falló RANSAC en {i-1}-{i}.")
+                track_3d = {}
+                continue
+                
+            R_global, _ = cv2.Rodrigues(rvec)
+            P_mats[i] = K @ np.hstack((R_global, tvec))
+            
+            # Actualizar tracker con inliers de PnP
+            new_track_3d = {}
+            for inl in inliers:
+                idx = inl[0]
+                new_track_3d[train_idx_list[idx]] = obj_pts[idx]
+                
+            # Triangular nuevos puntos usando la nueva pose para densificar
+            E, mask_E = cv2.findEssentialMat(pts1, pts2, K, method=cv2.RANSAC, prob=0.999, threshold=1.0)
+            if E is not None:
+                inliers_E_idx = np.where(mask_E.ravel() == 255)[0]
+                pts1_in = pts1[inliers_E_idx]
+                pts2_in = pts2[inliers_E_idx]
+                
+                if len(pts1_in) > 0:
+                    pts_4d = cv2.triangulatePoints(P_mats[i-1], P_mats[i], pts1_in.T, pts2_in.T)
+                    pts_3d = (pts_4d[:3] / pts_4d[3]).T
+                    
+                    added = 0
+                    for idx_in_inlier, orig_idx in enumerate(inliers_E_idx):
+                        m = good[orig_idx]
+                        if m.trainIdx not in new_track_3d:
+                            new_track_3d[m.trainIdx] = pts_3d[idx_in_inlier]
+                            added += 1
+                    
+                    all_points_global.append(pts_3d)
+                    print(f"  > Par {i-1}-{i} procesado (PnP). Puntos añadidos: {added}")
+            
+            track_3d = new_track_3d
 
-    if not all_points:
-        print("No se pudieron generar puntos.")
+    if not all_points_global:
+        print("No se pudieron generar puntos globales.")
         return
 
-    # Consolidar todos los puntos
-    cloud_final = np.hstack(all_points)
+    cloud_final = np.vstack(all_points_global).T
     visualizar_y_guardar(cloud_final, folder_name, w, h)
 
 def visualizar_y_guardar(cloud, folder_name, w, h):
@@ -236,7 +313,7 @@ def visualizar_y_guardar(cloud, folder_name, w, h):
     print(f"Resultado guardado en evidencias/{folder_name}/nube_3d_yolo_completa.png")
     
     # Vista interactiva 3D con Matplotlib
-    plt.show() 
+    #plt.show() 
 
 def main():
     if len(sys.argv) != 2:
