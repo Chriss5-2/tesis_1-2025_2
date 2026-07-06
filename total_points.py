@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 # Triangulación y reconstrucción 3D usando SIFT entre tres imágenes
 # Este script será la extensión de medium_points.py ya que ahora uniremos las nubes de puntos entre las tres vistas para 
@@ -53,15 +54,13 @@ def obtener_nube_puntos(img_origen, img_destino, K, color_code):
     return points_3d
 
 
-def read_and_display_3d_reconstruction(folder_name):
-    # Cargar las 3 imágenes
-    img_left = cv2.imread('Img_prueba/' + folder_name + '/minus_15.jpeg', cv2.IMREAD_GRAYSCALE)
-    img_center = cv2.imread('Img_prueba/' + folder_name + '/front.jpeg', cv2.IMREAD_GRAYSCALE)
-    img_right = cv2.imread('Img_prueba/' + folder_name + '/plus_15.jpeg', cv2.IMREAD_GRAYSCALE)
-
+def read_and_display_3d_reconstruction(img_left, img_center, img_right, label):
+    """
+    Calcula y retorna las nubes de puntos 3D a partir de tres imágenes.
+    """
     if img_left is None or img_center is None or img_right is None:
-        print("Error: Faltan imágenes.")
-        exit()
+        print(f"Error: Faltan imágenes para {label}")
+        return None, None
 
     # Redimensionado igual que en medium_points.py
     scale = 100 
@@ -76,60 +75,98 @@ def read_and_display_3d_reconstruction(folder_name):
     K = np.array([[focal_length, 0, cx], [0, focal_length, cy], [0, 0, 1]])
 
     # En ambos casos, nuestro punto de referencia será la cámara central
-    print("Procesando centro e izquierda ====")
+    print(f"Procesando grupo: {label}")
     # Usamos el centro como ancla
     cloud_left = obtener_nube_puntos(img_center, img_left, K, 'b')
-
-    print("Procesando centro y derecha ====")
-    # Usamos el centro como ancla
     cloud_right = obtener_nube_puntos(img_center, img_right, K, 'r')
 
-    # Generando la visualización 3D fusionando ambas nubes
-    print("Generando visualización 3D")
-    fig = plt.figure(figsize=(10, 8))
-    ax = fig.add_subplot(111, projection='3d')
+    return cloud_left, cloud_right
 
-    # Función para limpiar y plotear puntos
-    def plot_cloud(cloud, color, label):
+def main():
+    ## Cargado de imágenes de la secuencia
+    print("Cargando imágenes de tripod_seq_20/")
+    
+    if not os.path.exists('tripod_seq_20'):
+        print("Error: La carpeta 'tripod_seq_20' no existe.")
+        return
+    
+    # Obtener todos los archivos .jpg de la carpeta
+    files = sorted([f for f in os.listdir('tripod_seq_20') if f.lower().endswith('.jpg')])
+    
+    if len(files) == 0:
+        print("Error: No hay archivos .jpg en tripod_seq_20/")
+        return
+    
+    print(f"Se encontraron {len(files)} imágenes")
+    
+    # Crear carpeta de salida
+    output_dir = os.path.join('visualizacion', 'tripod_seq_20')
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    
+    # Acumular todas las nubes de puntos
+    all_clouds_left = []
+    all_clouds_right = []
+    
+    # Obtener primera imagen para escala
+    first_img = cv2.imread(os.path.join('tripod_seq_20', files[1]), cv2.IMREAD_GRAYSCALE)
+    scale = 100
+    h, w = int(first_img.shape[0] * scale / 100), int(first_img.shape[1] * scale / 100)
+    
+    # Procesar cada grupo de 3 imágenes consecutivas (left, center, right)
+    for i in range(0, len(files) - 2, 3):
+        img_left_path = os.path.join('tripod_seq_20', files[i])
+        img_center_path = os.path.join('tripod_seq_20', files[i + 1])
+        img_right_path = os.path.join('tripod_seq_20', files[i + 2])
+        
+        img_left = cv2.imread(img_left_path, cv2.IMREAD_GRAYSCALE)
+        img_center = cv2.imread(img_center_path, cv2.IMREAD_GRAYSCALE)
+        img_right = cv2.imread(img_right_path, cv2.IMREAD_GRAYSCALE)
+        
+        label = f"{files[i][:-4]}_{files[i+1][:-4]}_{files[i+2][:-4]}"
+        print(f"Procesando grupo: {label}")
+        
+        cloud_left, cloud_right = read_and_display_3d_reconstruction(img_left, img_center, img_right, label)
+        
+        if cloud_left is not None:
+            all_clouds_left.append(cloud_left)
+        if cloud_right is not None:
+            all_clouds_right.append(cloud_right)
+    
+    # Generar visualización unida de todas las nubes
+    print("\nGenerando visualización 3D combinada de toda la secuencia...")
+    fig = plt.figure(figsize=(14, 10))
+    ax = fig.add_subplot(111, projection='3d')
+    
+    # Función para plotear puntos
+    def plot_cloud(cloud, color, alpha=0.3):
         if cloud is None: return
         Xs = cloud[0]
         Ys = cloud[1]
         Zs = cloud[2]
         
-        # Quitamos los puntos muy lejanos o erróneos para que la visualización sea mejor
+        # Quitamos los puntos muy lejanos o erróneos
         mask = (abs(Xs) < w) & (abs(Ys) < h) & (Zs > 0) & (Zs < w*2)
         
-        ax.scatter(Xs[mask], Zs[mask], -Ys[mask], c=color, marker='.', s=2, label=label, alpha=0.6)
-
-    # Graficamos ambas nubes en el MISMO espacio
-    plot_cloud(cloud_left, 'blue', 'Datos Vista Izquierda')
-    plot_cloud(cloud_right, 'red', 'Datos Vista Derecha')
-
+        ax.scatter(Xs[mask], Zs[mask], -Ys[mask], c=color, marker='.', s=1, alpha=alpha)
+    
+    # Plotear todas las nubes izquierdas y derechas
+    for cloud in all_clouds_left:
+        plot_cloud(cloud, 'blue', alpha=0.2)
+    
+    for cloud in all_clouds_right:
+        plot_cloud(cloud, 'red', alpha=0.2)
+    
     ax.set_xlabel('X')
     ax.set_ylabel('Profundidad Z')
     ax.set_zlabel('Altura Y')
-    ax.set_title('Reconstrucción 3D Fusionada (3 Vistas) - ' + folder_name)
-    ax.legend()
-
-    # Guardando la reconstrucción 3D como imagen en movimiento
-    filename = 'visualizacion/' + folder_name + '/reconstruccion_3D_fusionada.png'
+    ax.set_title('Reconstrucción 3D Fusionada - Toda la Secuencia tripod_seq_20')
+    
+    # Guardar imagen
+    filename = os.path.join(output_dir, 'reconstruccion_3D_completa.png')
     plt.savefig(filename, dpi=300, bbox_inches='tight')
-    print("Imagen de reconstrucción 3D guardada como: " + filename)
+    print(f"Imagen de reconstrucción 3D combinada guardada como: {filename}")
     plt.show()
-
-def main():
-    ## Cargado de imágenes
-    print("Cargando imágenes")
-    Img_pruebas=["C_America", "Kirby", "Llama"]
-    print("Seleccionando carpeta de imágenes: C_America")
-    print("Generando reconstrucción 3D para la carpeta: C_America")
-    read_and_display_3d_reconstruction("C_America")
-    print("Seleccionando carpeta de imágenes: Kirby")
-    print("Generando reconstrucción 3D para la carpeta: Kirby")
-    read_and_display_3d_reconstruction("Kirby")
-    print("Seleccionando carpeta de imágenes: Llama")
-    print("Generando reconstrucción 3D para la carpeta: Llama")
-    read_and_display_3d_reconstruction("Llama")
 
 if __name__ == "__main__":
     main()
